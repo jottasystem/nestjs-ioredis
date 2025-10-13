@@ -1,6 +1,6 @@
 {
   "name": "@raphaabreu/nestjs-ioredis",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "ioredis module for NestJS",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

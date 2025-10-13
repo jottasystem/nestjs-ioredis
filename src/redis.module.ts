@@ -10,7 +10,7 @@ export class RedisModule {
       nodes = (process.env.REDIS || 'redis://localhost:6379').split(',');
     }
     options = {
-      scaleReads: 'slave',
+      scaleReads: 'all',
       ...options,
     };
 

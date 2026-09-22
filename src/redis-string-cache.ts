@@ -1,9 +1,9 @@
-import { StructuredLogger } from '@raphaabreu/nestjs-opensearch-structured-logger';
-import { stringify, parse } from 'flatted';
+import { Logger, Provider } from '@nestjs/common';
+import { parse, stringify } from 'flatted';
 import { RedisCluster } from './redis.cluster';
 
 export type RedisStringCacheOptions<T = any> = {
-  serializer?: (event: T) => string;
+  serializer?: (event: T | null) => string;
   deserializer?: (event: string) => T;
 
   keyPrefix?: string;
@@ -13,7 +13,7 @@ export type RedisStringCacheOptions<T = any> = {
   setErrorBehavior?: 'throws' | 'ignores';
 };
 
-const defaultOptions: Partial<RedisStringCacheOptions> = {
+const defaultOptions: Required<RedisStringCacheOptions> = {
   serializer: stringify,
   deserializer: parse,
 
@@ -25,15 +25,18 @@ const defaultOptions: Partial<RedisStringCacheOptions> = {
 };
 
 export class RedisStringCache<T = any> {
-  private readonly logger = new StructuredLogger(RedisStringCache.name);
+  private readonly logger = new Logger(RedisStringCache.name);
 
-  private readonly options: RedisStringCacheOptions<T>;
+  private readonly options: Required<RedisStringCacheOptions<T>>;
 
-  constructor(private readonly redis: RedisCluster, options?: RedisStringCacheOptions<T>) {
-    this.options = { ...defaultOptions, ...options };
+  constructor(
+    private readonly redis: RedisCluster,
+    options?: RedisStringCacheOptions<T>,
+  ) {
+    this.options = { ...defaultOptions, ...options } as Required<RedisStringCacheOptions<T>>;
   }
 
-  static register<T>(options: RedisStringCacheOptions<T>) {
+  static register<T>(options: RedisStringCacheOptions<T>): Provider {
     return {
       provide: RedisStringCache,
       inject: [RedisCluster],
@@ -42,16 +45,16 @@ export class RedisStringCache<T = any> {
   }
 
   async get(key: string): Promise<T | null> {
-    key = this.getKey(key);
-    let data: string;
+    const fullKey = this.getKey(key);
+    let data: string | null;
 
     try {
-      data = await this.redis.get(key);
-      if (!data) {
+      data = await this.redis.get(fullKey);
+      if (data === null || data === undefined) {
         return null;
       }
     } catch (error) {
-      this.logger.error('Failed to get key ${key} from cache', error, key);
+      this.logger.error(`Failed to get key ${fullKey} from cache`, (error as Error).stack);
 
       if (this.options.getErrorBehavior === 'returnsNull') {
         return null;
@@ -61,11 +64,12 @@ export class RedisStringCache<T = any> {
     }
 
     try {
-      const result = this.options.deserializer(data);
-
-      return result;
+      return this.options.deserializer(data);
     } catch (error) {
-      this.logger.error('Failed to deserialize key ${key} from cache with value ${value}', error, key, data);
+      this.logger.error(
+        `Failed to deserialize key ${fullKey} from cache with value ${truncate(data)}`,
+        (error as Error).stack,
+      );
 
       if (this.options.deserializeErrorBehavior === 'removes') {
         await this.remove(key);
@@ -79,14 +83,14 @@ export class RedisStringCache<T = any> {
   }
 
   async set(key: string, value: T | null, ttl: number): Promise<void> {
-    key = this.getKey(key);
+    const fullKey = this.getKey(key);
 
     let serializedValue: string;
 
     try {
       serializedValue = this.options.serializer(value);
     } catch (error) {
-      this.logger.error('Failed to serialize value for key ${key}', error, key);
+      this.logger.error(`Failed to serialize value for key ${fullKey}`, (error as Error).stack);
 
       if (this.options.setErrorBehavior === 'ignores') {
         return;
@@ -96,12 +100,12 @@ export class RedisStringCache<T = any> {
 
     try {
       if (ttl > 0) {
-        await this.redis.setex(key, ttl, serializedValue);
+        await this.redis.setex(fullKey, ttl, serializedValue);
       } else {
-        await this.redis.set(key, serializedValue);
+        await this.redis.set(fullKey, serializedValue);
       }
     } catch (error) {
-      this.logger.error('Failed to set value for key ${key}', error, key);
+      this.logger.error(`Failed to set value for key ${fullKey}`, (error as Error).stack);
 
       if (this.options.setErrorBehavior === 'ignores') {
         return;
@@ -111,12 +115,15 @@ export class RedisStringCache<T = any> {
   }
 
   async remove(key: string): Promise<void> {
-    key = this.getKey(key);
-
-    await this.redis.del(key);
+    await this.redis.del(this.getKey(key));
   }
 
-  private getKey(key: string) {
-    return `${this.options.keyPrefix}${this.options.keyPrefix ? ':' : ''}${key}`;
+  private getKey(key: string): string {
+    const { keyPrefix } = this.options;
+    return keyPrefix ? `${keyPrefix}:${key}` : key;
   }
+}
+
+function truncate(value: string, max = 100): string {
+  return value.length > max ? `${value.substring(0, max)}...` : value;
 }
